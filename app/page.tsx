@@ -1,709 +1,264 @@
 "use client";
 
-import { validateProviderBaseUrl } from "@/lib/provider-url";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-
-type UiModel = {
-  id: string;
-  name: string;
-  provider: string;
-  providerLabel: string;
-};
-
-type ModelsResponse = {
-  data?: UiModel[];
-  configured?: boolean;
-  message?: string | null;
-};
-
-type ChatSettings = {
-  baseURL: string;
-  apiKey: string;
-};
-
-type ChatPart = {
-  type: "text";
-  text: string;
-};
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  parts: ChatPart[];
-};
-
-const STORAGE_KEY = "openai-compatible-chat-settings";
-
-const emptySettings: ChatSettings = {
-  baseURL: "",
-  apiKey: "",
-};
-
-const suggestedPrompts = [
-  "How do I create a private GitHub repository from this template with gh CLI?",
-  "Show me the gh CLI command to generate a new project from this template and clone it locally.",
-  "What should I customize first after creating a repo from this Next.js template?",
-];
-
-function readStoredSettings(): ChatSettings {
-  if (typeof window === "undefined") {
-    return emptySettings;
-  }
-
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-
-  if (!raw) {
-    return emptySettings;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<ChatSettings>;
-
-    return {
-      apiKey: parsed.apiKey?.trim() ?? "",
-      baseURL: parsed.baseURL?.trim() ?? "",
-    };
-  } catch {
-    return emptySettings;
-  }
-}
-
-function createMessage(role: ChatMessage["role"], text: string): ChatMessage {
-  return {
-    id: `${role}-${crypto.randomUUID()}`,
-    role,
-    parts: [{ type: "text", text }],
-  };
-}
-
-function getMessageText(message: ChatMessage) {
-  return message.parts.map((part) => part.text).join("\n\n");
-}
+import Link from "next/link";
+import { useState } from "react";
 
 export default function Page() {
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [models, setModels] = useState<UiModel[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [modelsMessage, setModelsMessage] = useState<string | null>(null);
-  const [settings, setSettings] = useState<ChatSettings>(emptySettings);
-  const [draftSettings, setDraftSettings] = useState<ChatSettings>(emptySettings);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [chatError, setChatError] = useState<string | null>(null);
-  const [isHydrated, setIsHydrated] = useState(false);
-  const [status, setStatus] = useState<"ready" | "submitted" | "streaming" | "error">("ready");
-  const [isShortViewport, setIsShortViewport] = useState(false);
-  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const previousMessageCountRef = useRef(0);
-
-  useEffect(() => {
-    const nextSettings = readStoredSettings();
-    setSettings(nextSettings);
-    setDraftSettings(nextSettings);
-    setIsHydrated(true);
-
-    if (!nextSettings.baseURL) {
-      setIsSettingsOpen(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const mediaQuery = window.matchMedia("(max-height: 500px), (max-width: 640px)");
-
-    const syncViewportState = (matches: boolean) => {
-      setIsShortViewport(matches);
-      setIsHeaderCollapsed(matches);
-    };
-
-    syncViewportState(mediaQuery.matches);
-
-    const handleChange = (event: MediaQueryListEvent) => {
-      syncViewportState(event.matches);
-    };
-
-    mediaQuery.addEventListener("change", handleChange);
-
-    return () => {
-      mediaQuery.removeEventListener("change", handleChange);
-    };
-  }, []);
-
-  const loadModels = useCallback(async (currentSettings: ChatSettings) => {
-    if (!currentSettings.baseURL) {
-      setModels([]);
-      setSelectedModelId("");
-      setModelsMessage(null);
-      return;
-    }
-
-    try {
-      const response = await fetch("/api/models", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        cache: "no-store",
-        body: JSON.stringify(currentSettings),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to load models (${response.status})`);
-      }
-
-      const payload = (await response.json()) as ModelsResponse;
-      const nextModels = payload.data ?? [];
-
-      setModels(nextModels);
-      setSelectedModelId((current) => {
-        if (nextModels.some((model) => model.id === current)) {
-          return current;
-        }
-
-        return nextModels[0]?.id ?? "";
-      });
-      setModelsMessage(payload.message ?? null);
-    } catch {
-      setModels([]);
-      setSelectedModelId("");
-      setModelsMessage("Could not load models from the configured OpenAI-compatible API.");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isHydrated) {
-      return;
-    }
-
-    void loadModels(settings);
-  }, [isHydrated, loadModels, settings]);
-
-  const selectedModel = useMemo(
-    () => models.find((model) => model.id === selectedModelId) ?? null,
-    [models, selectedModelId]
-  );
-
-  const isHeaderDetailsVisible = !isShortViewport || !isHeaderCollapsed;
-
-  const groupedModels = useMemo(() => {
-    const groups = new Map<string, UiModel[]>();
-
-    for (const model of models) {
-      groups.set(model.providerLabel, [...(groups.get(model.providerLabel) ?? []), model]);
-    }
-
-    return Array.from(groups.entries());
-  }, [models]);
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-
-    if (!viewport) {
-      previousMessageCountRef.current = messages.length;
-      return;
-    }
-
-    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    const shouldStickToBottom = distanceFromBottom < 96 || messages.length > previousMessageCountRef.current;
-
-    if (shouldStickToBottom) {
-      requestAnimationFrame(() => {
-        viewport.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: messages.length > previousMessageCountRef.current ? "smooth" : "auto",
-        });
-      });
-    }
-
-    previousMessageCountRef.current = messages.length;
-  }, [messages]);
-
-  const handleSendText = useCallback(
-    async (text: string) => {
-      if (!settings.baseURL || !selectedModel) {
-        setDraftSettings(settings);
-        setSettingsError(null);
-        setIsSettingsOpen(true);
-        return;
-      }
-
-      const trimmedText = text.trim();
-
-      if (!trimmedText || status === "submitted" || status === "streaming") {
-        return;
-      }
-
-      const userMessage = createMessage("user", trimmedText);
-      const assistantMessageId = `assistant-${crypto.randomUUID()}`;
-
-      setChatError(null);
-      setStatus("submitted");
-      setMessages((current) => [
-        ...current,
-        userMessage,
-        {
-          id: assistantMessageId,
-          role: "assistant",
-          parts: [{ type: "text", text: "" }],
-        },
-      ]);
-      setInput("");
-
-      try {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            apiKey: settings.apiKey,
-            baseURL: settings.baseURL,
-            model: selectedModel.id,
-            messages: [...messages, userMessage],
-          }),
-        });
-
-        if (!response.ok || !response.body) {
-          const detail = await response.text().catch(() => "");
-          throw new Error(detail || `Chat request failed with status ${response.status}.`);
-        }
-
-        setStatus("streaming");
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let assistantText = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (done) {
-            break;
-          }
-
-          assistantText += decoder.decode(value, { stream: true });
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === assistantMessageId
-                ? {
-                    ...message,
-                    parts: [{ type: "text", text: assistantText }],
-                  }
-                : message
-            )
-          );
-        }
-
-        assistantText += decoder.decode();
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantMessageId
-              ? {
-                  ...message,
-                  parts: [{ type: "text", text: assistantText || "No response returned." }],
-                }
-              : message
-          )
-        );
-        setStatus("ready");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Chat request failed.";
-        setMessages((current) => current.filter((entry) => entry.id !== assistantMessageId));
-        setChatError(message);
-        setStatus("error");
-      }
-    },
-    [messages, selectedModel, settings, status]
-  );
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    await handleSendText(input);
-  };
-
-  const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || !event.ctrlKey) {
-      return;
-    }
-
-    if (!input.trim() || (status !== "ready" && status !== "error") || isChatDisabled) {
-      event.preventDefault();
-      return;
-    }
-
-    event.preventDefault();
-    event.currentTarget.form?.requestSubmit();
-  };
-
-  const handleSaveSettings = async () => {
-    const trimmedSettings = {
-      apiKey: draftSettings.apiKey.trim(),
-      baseURL: draftSettings.baseURL.trim(),
-    };
-
-    const validatedBaseURL = validateProviderBaseUrl(trimmedSettings.baseURL);
-
-    if (!validatedBaseURL.ok) {
-      setSettingsError(validatedBaseURL.error);
-      return;
-    }
-
-    const nextSettings = {
-      ...trimmedSettings,
-      baseURL: validatedBaseURL.normalizedUrl,
-    };
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSettings));
-    setSettings(nextSettings);
-    setDraftSettings(nextSettings);
-    setSettingsError(null);
-    setIsSettingsOpen(false);
-    await loadModels(nextSettings);
-  };
-
-  const handleClearSettings = () => {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setSettings(emptySettings);
-    setDraftSettings(emptySettings);
-    setModels([]);
-    setSelectedModelId("");
-    setModelsMessage(null);
-    setSettingsError(null);
-    setIsSettingsOpen(false);
-  };
-
-  const isChatDisabled = !settings.baseURL || !selectedModel;
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   return (
-    <>
-      <main className="box-border h-dvh overflow-hidden bg-slate-950 px-2 py-2 text-slate-100 sm:px-6 sm:py-10">
-        <div className="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl shadow-cyan-950/20 sm:rounded-3xl">
-          <header className="border-b border-slate-800 px-3 py-2 sm:px-8 sm:py-6">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-4xl">
-                  Simple streaming chatbot
-                </h1>
-                <p className="mt-1 hidden text-xs text-slate-400 sm:block">
-                  Browser-configured OpenAI-compatible chat template
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 font-bold text-xl tracking-tight text-emerald-700">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4" />
+            </svg>
+            IncognitoDAO
+          </div>
+          
+          {/* Desktop Nav */}
+          <nav className="hidden sm:flex items-center gap-6 text-sm font-medium text-slate-600">
+            <Link href="#features" className="hover:text-emerald-600 transition-colors">Features</Link>
+            <Link href="#how-it-works" className="hover:text-emerald-600 transition-colors">How it Works</Link>
+            <Link href="#fhenix" className="hover:text-emerald-600 transition-colors">Powered by Fhenix</Link>
+          </nav>
+          
+          {/* Desktop Actions */}
+          <div className="hidden sm:flex items-center gap-4">
+            <button className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-slate-900 transition-colors">
+              Documentation
+            </button>
+            <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2">
+              Launch App
+            </button>
+          </div>
+
+          {/* Mobile Menu Button */}
+          <button 
+            className="sm:hidden p-2 text-slate-600 hover:text-slate-900 transition-colors"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            aria-label="Toggle menu"
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {isMobileMenuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+        </div>
+
+        {/* Mobile Menu Collapse */}
+        <div className={`sm:hidden overflow-hidden transition-all duration-300 ease-in-out ${isMobileMenuOpen ? 'max-h-64 border-t border-slate-100' : 'max-h-0'}`}>
+          <nav className="flex flex-col px-4 py-4 space-y-4 text-sm font-medium text-slate-600 bg-white">
+            <Link href="#features" className="hover:text-emerald-600 transition-colors" onClick={() => setIsMobileMenuOpen(false)}>Features</Link>
+            <Link href="#how-it-works" className="hover:text-emerald-600 transition-colors" onClick={() => setIsMobileMenuOpen(false)}>How it Works</Link>
+            <Link href="#fhenix" className="hover:text-emerald-600 transition-colors" onClick={() => setIsMobileMenuOpen(false)}>Powered by Fhenix</Link>
+            <div className="pt-4 flex flex-col gap-3 border-t border-slate-100">
+              <button className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-slate-900 bg-slate-50 rounded-lg transition-colors w-full text-center">
+                Documentation
+              </button>
+              <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all w-full text-center">
+                Launch App
+              </button>
+            </div>
+          </nav>
+        </div>
+      </header>
+
+      <main className="flex-1">
+        {/* Hero Section */}
+        <section className="pt-24 pb-32 px-4 relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-100 via-slate-50 to-slate-50 -z-10" />
+          <div className="max-w-4xl mx-auto text-center space-y-8">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-semibold tracking-wide uppercase">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              Live on Base Sepolia
+            </div>
+            <h1 className="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-tight text-slate-900 leading-tight">
+              Vote with conviction. <br className="hidden sm:block" />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500">
+                Reveal nothing.
+              </span>
+            </h1>
+            <p className="text-lg sm:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed">
+              The first DAO governance protocol where your vote is mathematically guaranteed to be private. Built on Fhenix using Fully Homomorphic Encryption (FHE).
+            </p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+              <Link
+                href="/create-proposal"
+                className="w-full sm:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl shadow-lg shadow-emerald-200 transition-all hover:-translate-y-0.5 text-center"
+              >
+                Create a Proposal
+              </Link>
+              <Link
+                href="/active-votes"
+                className="w-full sm:w-auto px-8 py-4 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold rounded-xl shadow-sm transition-all text-center"
+              >
+                Explore Active Votes
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* Features Grid */}
+        <section id="features" className="py-24 bg-white border-y border-slate-100">
+          <div className="max-w-6xl mx-auto px-4">
+            <div className="text-center max-w-2xl mx-auto mb-16">
+              <h2 className="text-3xl font-bold tracking-tight text-slate-900 mb-4">Why privacy matters for DAOs</h2>
+              <p className="text-slate-600">Public ledgers created trust, but destroyed strategic voting. We're bringing game theory back to governance.</p>
+            </div>
+            <div className="grid md:grid-cols-3 gap-8">
+              {/* Feature 1 */}
+              <div className="p-6 rounded-2xl bg-slate-50 border border-slate-100 hover:border-emerald-100 transition-colors">
+                <div className="w-12 h-12 rounded-lg bg-emerald-100 flex items-center justify-center mb-6 text-emerald-600">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-slate-900 mb-3">No Bandwagon Effect</h3>
+                <p className="text-slate-600 leading-relaxed">
+                  When votes are public, early whales dictate the outcome. With encrypted tallies, voters decide based on conviction, not momentum.
                 </p>
               </div>
 
-              <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-                {isShortViewport ? (
-                  <button
-                    aria-controls="chat-header-details"
-                    aria-expanded={isHeaderDetailsVisible}
-                    className="inline-flex size-8 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-sm font-medium text-slate-100 transition hover:border-cyan-400 hover:text-cyan-200"
-                    onClick={() => setIsHeaderCollapsed((current) => !current)}
-                    type="button"
-                  >
-                    <span aria-hidden>{isHeaderDetailsVisible ? "▴" : "▾"}</span>
-                    <span className="sr-only">
-                      {isHeaderDetailsVisible ? "Hide header details" : "Show header details"}
-                    </span>
-                  </button>
-                ) : null}
-                <button
-                  className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-white transition hover:border-cyan-400 hover:text-cyan-200 sm:px-3 sm:py-1.5 sm:text-sm"
-                  onClick={() => {
-                    setDraftSettings(settings);
-                    setSettingsError(null);
-                    setIsSettingsOpen(true);
-                  }}
-                  type="button"
-                >
-                  Settings
-                </button>
+              {/* Feature 2 */}
+              <div className="p-6 rounded-2xl bg-slate-50 border border-slate-100 hover:border-emerald-100 transition-colors">
+                <div className="w-12 h-12 rounded-lg bg-emerald-100 flex items-center justify-center mb-6 text-emerald-600">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-slate-900 mb-3">Zero Retaliation</h3>
+                <p className="text-slate-600 leading-relaxed">
+                  Delegates and stakeholders shouldn't fear retribution for voting against popular sentiment. Protect your relationships and your treasury.
+                </p>
+              </div>
+
+              {/* Feature 3 */}
+              <div className="p-6 rounded-2xl bg-slate-50 border border-slate-100 hover:border-emerald-100 transition-colors">
+                <div className="w-12 h-12 rounded-lg bg-emerald-100 flex items-center justify-center mb-6 text-emerald-600">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-slate-900 mb-3">Anti-Bribery</h3>
+                <p className="text-slate-600 leading-relaxed">
+                  If you can't prove how you voted, you can't sell your vote. FHE breaks the proof-of-vote loop that enables malicious market manipulation.
+                </p>
               </div>
             </div>
-
-            {isHeaderDetailsVisible ? (
-              <div className="mt-2 space-y-2 sm:mt-3 sm:space-y-3" id="chat-header-details">
-                <div className="hidden max-w-full rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-[11px] font-medium text-cyan-200 sm:inline-flex">
-                  Browser-configured OpenAI-compatible chat template
-                </div>
-                <p className="max-w-3xl text-xs leading-4 text-slate-300 sm:text-base sm:leading-6">
-                  Add your own public HTTPS OpenAI-compatible base URL, optionally provide an API key,
-                  load models, and stream chat responses in the browser.
-                </p>
-                <div className="flex flex-wrap gap-1 text-xs text-slate-300 sm:gap-2 sm:text-sm">
-                  <div className="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 capitalize sm:px-3 sm:py-1.5">
-                    Status: <span className="font-medium text-white">{status}</span>
-                  </div>
-                  <div className="hidden rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 sm:block sm:px-3 sm:py-1.5">
-                    Model: <span className="font-medium text-white">{selectedModel?.name ?? "Not selected"}</span>
-                  </div>
-                  <div className="hidden rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 sm:block sm:px-3 sm:py-1.5">
-                    Provider: <span className="font-medium text-white">{selectedModel?.providerLabel ?? "OpenAI-compatible API"}</span>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </header>
-
-          <div className="flex min-h-0 flex-1 flex-col px-3 pb-2 pt-2 sm:px-6 sm:pb-6 sm:pt-6">
-            <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-slate-800 bg-slate-950/70 sm:rounded-[24px]">
-              <div className="relative min-h-0 flex-1 overflow-hidden">
-                <div
-                  className="chat-scrollbar absolute inset-0 overflow-y-scroll overscroll-contain px-3 py-3 sm:px-6 sm:py-6"
-                  ref={viewportRef}
-                >
-                  <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-2 pb-2 sm:gap-3">
-                    {messages.length === 0 ? (
-                      <div className="flex min-h-full flex-col items-center justify-center rounded-[22px] border border-dashed border-slate-700 bg-slate-900/60 px-3 py-4 text-center sm:rounded-3xl sm:px-6 sm:py-10">
-                        <h2 className="text-base font-semibold text-white sm:text-xl">
-                          {settings.baseURL ? "Start a conversation" : "Add your API settings to begin"}
-                        </h2>
-                        <p className="mt-2 max-w-2xl text-xs leading-4 text-slate-300 sm:mt-3 sm:text-sm sm:leading-6">
-                          {settings.baseURL
-                            ? "Choose a model, send a message, and streamed responses will appear here."
-                            : "Open settings and add a public HTTPS OpenAI-compatible base URL. Localhost and private-network targets are blocked in this public template."}
-                        </p>
-                        {settings.baseURL ? (
-                          <div className="mt-3 grid w-full max-w-2xl gap-1.5 sm:mt-6 sm:gap-3">
-                            {suggestedPrompts.map((prompt) => (
-                              <button
-                                className="rounded-2xl border border-slate-700 bg-slate-900 px-3 py-2 text-left text-xs leading-4 text-slate-100 transition hover:border-cyan-400 hover:bg-slate-800 sm:px-4 sm:py-3 sm:text-sm sm:leading-6"
-                                key={prompt}
-                                onClick={() => setInput(prompt)}
-                                type="button"
-                              >
-                                {prompt}
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <button
-                            className="mt-3 rounded-full bg-cyan-500 px-3 py-1.5 text-xs font-medium text-slate-950 transition hover:bg-cyan-400 sm:mt-6 sm:px-4 sm:py-2 sm:text-sm"
-                            onClick={() => {
-                              setDraftSettings(settings);
-                              setSettingsError(null);
-                              setIsSettingsOpen(true);
-                            }}
-                            type="button"
-                          >
-                            Open settings
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      messages.map((message) => (
-                        <div
-                          className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-                          key={message.id}
-                        >
-                          <div
-                            className={`max-w-[88%] rounded-3xl px-4 py-3 text-sm leading-6 shadow-sm ${
-                              message.role === "user"
-                                ? "bg-cyan-500 text-slate-950"
-                                : "border border-slate-800 bg-slate-900 text-slate-100"
-                            }`}
-                          >
-                            <div
-                              className={`mb-2 text-xs font-semibold uppercase tracking-[0.2em] ${
-                                message.role === "user" ? "text-cyan-950/80" : "text-slate-400"
-                              }`}
-                            >
-                              {message.role === "user" ? "You" : "Assistant"}
-                            </div>
-                            <div className="space-y-3 whitespace-pre-wrap break-words">
-                              {getMessageText(message) || "…"}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t border-slate-800 bg-slate-900/90 p-2.5 sm:p-4">
-                <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
-                  {modelsMessage ? (
-                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                      {modelsMessage}
-                    </div>
-                  ) : null}
-
-                  {chatError ? (
-                    <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                      {chatError}
-                    </div>
-                  ) : null}
-
-                  <form className="rounded-[22px] border border-slate-800 bg-slate-950 p-2 sm:rounded-3xl sm:p-3" onSubmit={handleSubmit}>
-                    <label className="sr-only" htmlFor="chat-input">
-                      Message
-                    </label>
-                    <textarea
-                      className="min-h-[72px] w-full resize-none rounded-2xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs leading-4 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400 sm:min-h-[120px] sm:px-4 sm:py-3 sm:text-sm sm:leading-6"
-                      disabled={isChatDisabled}
-                      id="chat-input"
-                      onChange={(event) => setInput(event.currentTarget.value)}
-                      onKeyDown={handleInputKeyDown}
-                      placeholder={
-                        isChatDisabled
-                          ? "Open settings and add your OpenAI-compatible base URL..."
-                          : "Ask about your app, architecture, or anything you want to explore..."
-                      }
-                      value={input}
-                    />
-
-                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                        <label className="sr-only" htmlFor="model-select">
-                          Model
-                        </label>
-                        <select
-                          className="min-w-[220px] rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
-                          disabled={models.length === 0}
-                          id="model-select"
-                          onChange={(event) => setSelectedModelId(event.currentTarget.value)}
-                          value={selectedModelId}
-                        >
-                          {models.length === 0 ? (
-                            <option value="">No models available</option>
-                          ) : (
-                            groupedModels.map(([group, items]) => (
-                              <optgroup key={group} label={group}>
-                                {items.map((model) => (
-                                  <option key={model.id} value={model.id}>
-                                    {model.name}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            ))
-                          )}
-                        </select>
-                        <button
-                          className="rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-cyan-400 hover:text-cyan-200"
-                          onClick={() => {
-                            setDraftSettings(settings);
-                            setSettingsError(null);
-                            setIsSettingsOpen(true);
-                          }}
-                          type="button"
-                        >
-                          Edit settings
-                        </button>
-                      </div>
-
-                      <button
-                        className="rounded-full bg-cyan-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                        disabled={!input.trim() || (status !== "ready" && status !== "error") || isChatDisabled}
-                        type="submit"
-                      >
-                        Send message
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            </section>
           </div>
-        </div>
+        </section>
+
+        {/* Fhenix Tech Section */}
+        <section id="how-it-works" className="py-24 bg-slate-900 text-white">
+          <div className="max-w-6xl mx-auto px-4 grid md:grid-cols-2 gap-16 items-center">
+            <div>
+              <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mb-6">
+                Powered by <span className="text-emerald-400">Fully Homomorphic Encryption</span>
+              </h2>
+              <p className="text-slate-400 text-lg mb-8 leading-relaxed">
+                Traditional privacy solutions require trusted off-chain servers or complex ZK circuits that don't easily support shared state.
+              </p>
+              <ul className="space-y-6">
+                <li className="flex gap-4">
+                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-1">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <strong className="block text-white mb-1">Encrypted on the client</strong>
+                    <span className="text-slate-400">Your vote is encrypted in your browser using `@cofhe/sdk` before hitting the RPC.</span>
+                  </div>
+                </li>
+                <li className="flex gap-4">
+                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-1">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <strong className="block text-white mb-1">Tallied in ciphertext</strong>
+                    <span className="text-slate-400">The Fhenix network adds up the votes using `FHE.add()` without ever seeing the plaintext amounts.</span>
+                  </div>
+                </li>
+                <li className="flex gap-4">
+                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mt-1">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <strong className="block text-white mb-1">Revealed only when complete</strong>
+                    <span className="text-slate-400">The final result is decrypted via threshold network only when the voting period expires. Individual votes remain hidden forever.</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div className="relative">
+              <div className="absolute -inset-4 bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 blur-2xl rounded-3xl" />
+              <div className="relative bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-2xl font-mono text-sm overflow-x-auto">
+                <div className="flex gap-2 mb-4 border-b border-slate-700 pb-4">
+                  <div className="w-3 h-3 rounded-full bg-red-500" />
+                  <div className="w-3 h-3 rounded-full bg-amber-500" />
+                  <div className="w-3 h-3 rounded-full bg-green-500" />
+                </div>
+                <div className="text-emerald-400 mb-2">// Vote processing on Fhenix</div>
+                <div className="text-slate-300">
+                  <span className="text-purple-400">function</span> <span className="text-blue-400">castVote</span>(
+                  <br />&nbsp;&nbsp;inEuint32 calldata <span className="text-slate-100">encryptedVoteWeight</span>,
+                  <br />&nbsp;&nbsp;inEbool calldata <span className="text-slate-100">isFor</span>
+                  <br />) <span className="text-purple-400">external</span> {'{'}
+                  <br />&nbsp;&nbsp;<span className="text-emerald-400">// Cast inputs to FHE types</span>
+                  <br />&nbsp;&nbsp;euint32 weight = FHE.asEuint32(encryptedVoteWeight);
+                  <br />&nbsp;&nbsp;ebool choice = FHE.asEbool(isFor);
+                  <br />
+                  <br />&nbsp;&nbsp;<span className="text-emerald-400">// Update tallies entirely in ciphertext</span>
+                  <br />&nbsp;&nbsp;euint32 votesFor = FHE.select(choice, weight, FHE.asEuint32(0));
+                  <br />&nbsp;&nbsp;euint32 votesAgainst = FHE.select(choice, FHE.asEuint32(0), weight);
+                  <br />
+                  <br />&nbsp;&nbsp;proposal.forVotes = FHE.add(proposal.forVotes, votesFor);
+                  <br />&nbsp;&nbsp;proposal.againstVotes = FHE.add(proposal.againstVotes, votesAgainst);
+                  <br />{'}'}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
       </main>
 
-      {isSettingsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8">
-          <div className="w-full max-w-lg rounded-3xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/40">
-            <div className="space-y-2">
-              <h2 className="text-xl font-semibold text-white">Chat provider settings</h2>
-              <p className="text-sm leading-6 text-slate-300">
-                Add a public HTTPS OpenAI-compatible base URL to enable model loading and chat
-                streaming. API key is optional unless your provider requires authentication.
-              </p>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-slate-100" htmlFor="base-url">
-                  Base URL
-                </label>
-                <input
-                  className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400"
-                  id="base-url"
-                  onChange={(event) => {
-                    const { value } = event.currentTarget;
-                    setDraftSettings((current) => ({
-                      ...current,
-                      baseURL: value,
-                    }));
-                    setSettingsError(null);
-                  }}
-                  placeholder="https://your-provider.example.com/v1"
-                  value={draftSettings.baseURL}
-                />
-                <p className="text-xs text-slate-400">
-                  Required. Must point to a public HTTPS OpenAI-compatible API.
-                </p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-slate-100" htmlFor="api-key">
-                  API key
-                </label>
-                <input
-                  className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400"
-                  id="api-key"
-                  onChange={(event) => {
-                    const { value } = event.currentTarget;
-                    setDraftSettings((current) => ({
-                      ...current,
-                      apiKey: value,
-                    }));
-                  }}
-                  placeholder="Optional"
-                  type="password"
-                  value={draftSettings.apiKey}
-                />
-                <p className="text-xs text-slate-400">
-                  Optional. Only needed if your provider requires authentication.
-                </p>
-              </div>
-
-              {settingsError ? (
-                <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-                  {settingsError}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
-              <button
-                className="rounded-full border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-slate-500"
-                onClick={handleClearSettings}
-                type="button"
-              >
-                Clear
-              </button>
-              <button
-                className="rounded-full border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-slate-500"
-                onClick={() => {
-                  setDraftSettings(settings);
-                  setSettingsError(null);
-                  setIsSettingsOpen(false);
-                }}
-                type="button"
-              >
-                Cancel
-              </button>
-              <button
-                className="rounded-full bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
-                onClick={() => void handleSaveSettings()}
-                type="button"
-              >
-                Save settings
-              </button>
-            </div>
+      <footer className="bg-slate-50 border-t border-slate-200 py-12">
+        <div className="max-w-6xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-2 font-bold text-lg text-slate-800">
+            <svg className="w-5 h-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4" />
+            </svg>
+            IncognitoDAO
+          </div>
+          <p className="text-slate-500 text-sm">
+            Built for the Private By Design dApp Buildathon. Powered by Fhenix.
+          </p>
+          <div className="flex gap-4">
+            <Link href="#" className="text-slate-400 hover:text-slate-600 transition-colors">
+              GitHub
+            </Link>
+            <Link href="#" className="text-slate-400 hover:text-slate-600 transition-colors">
+              Docs
+            </Link>
+            <Link href="#" className="text-slate-400 hover:text-slate-600 transition-colors">
+              Twitter
+            </Link>
           </div>
         </div>
-      ) : null}
-    </>
+      </footer>
+    </div>
   );
 }
