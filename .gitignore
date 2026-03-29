@@ -7,3 +7,8 @@ out
 .env.local
 .env*.local
 .dev.vars*
+contracts/artifacts
+contracts/cache
+contracts/typechain-types
+contracts/node_modules
+contracts/deployments

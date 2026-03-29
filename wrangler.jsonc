@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "nextjs-template",
-  "main": ".open-next/worker.js",
+  "main": "worker.ts",
   "compatibility_date": "2026-03-28",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
@@ -12,6 +12,20 @@
     {
       "binding": "WORKER_SELF_REFERENCE",
       "service": "nextjs-template"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VOTE_INDEXER",
+        "class_name": "VoteIndexerDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VoteIndexerDO"]
     }
   ],
   "observability": {

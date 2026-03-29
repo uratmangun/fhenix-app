@@ -29,9 +29,9 @@ export default function Page() {
             <button className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-slate-900 transition-colors">
               Documentation
             </button>
-            <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2">
+            <Link href="/debug" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2">
               Launch App
-            </button>
+            </Link>
           </div>
 
           {/* Mobile Menu Button */}
@@ -60,9 +60,9 @@ export default function Page() {
               <button className="px-4 py-2 text-sm font-medium text-slate-700 hover:text-slate-900 bg-slate-50 rounded-lg transition-colors w-full text-center">
                 Documentation
               </button>
-              <button className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all w-full text-center">
+              <Link href="/debug" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition-all w-full text-center block" onClick={() => setIsMobileMenuOpen(false)}>
                 Launch App
-              </button>
+              </Link>
             </div>
           </nav>
         </div>
