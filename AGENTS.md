@@ -24,6 +24,11 @@ When creating UI components, styling, or choosing color palettes:
 When executing terminal commands or writing shell scripts:
 @.opencode/rules/shell-preferences.mdc
 
+### Tool Invocation
+
+When using `agent-browser` or `mcporter`:
+@.opencode/rules/npx-for-agent-browser-and-mcporter.mdc
+
 ### Package Management
 
 When installing dependencies, running package-manager setup, or adding/removing packages:
@@ -33,6 +38,11 @@ When installing dependencies, running package-manager setup, or adding/removing 
 
 When writing commit messages:
 @.opencode/rules/commit-message-conventions.mdc
+
+### Fhenix Contracts
+
+When working with `contracts/contracts/EncryptedVoting.sol` or `contracts/contracts/EncryptedVotingMock.sol`:
+@.opencode/rules/fhenix-local-workflow.mdc
 
 ## General Guidelines
 

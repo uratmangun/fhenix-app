@@ -1,0 +1,47 @@
+---
+description: "Fhenix local workflow: only deploy mock locally; real encrypted contract is tested locally but not deployed"
+---
+
+# Fhenix Local Workflow
+
+## Overview
+
+**MANDATORY** for this project:
+
+- `contracts/contracts/EncryptedVotingMock.sol` is the only Fhenix-related contract that should be deployed to local Hardhat RPC
+- `contracts/contracts/EncryptedVoting.sol` should **not** be deployed locally for product testing flows
+- `EncryptedVoting.sol` may be compiled and exercised in local tests only
+- Reason: local development should use the mock contract, while encrypted Fhenix behavior is validated through local test execution rather than local app deployment
+
+## Required Behavior
+
+### When working with `EncryptedVotingMock.sol`
+
+- You may:
+  - compile it locally
+  - deploy it to localhost
+  - wire app pages against its local address
+  - use it for submit/vote UI testing
+
+### When working with `EncryptedVoting.sol`
+
+- You may:
+  - compile it locally
+  - write or run local tests against it
+  - inspect Fhenix docs and examples
+- You must **not**:
+  - add localhost deployment flows for it
+  - wire app pages to a localhost deployment of it
+  - create scripts whose purpose is local deployment for the real encrypted contract
+
+## Script Rules
+
+- Keep `deploy:mock:local`
+- Do **not** add or keep `deploy:real:local`
+- If a local-deploy script for `EncryptedVoting.sol` exists, remove it
+
+## Testing Guidance
+
+- For local application testing, always prefer the mock contract
+- For encrypted/FHE contract verification, prefer local Hardhat tests over local app deployment
+- If documentation is needed, inspect Fhenix references first before changing encrypted logic

@@ -5,7 +5,8 @@
   "scripts": {
     "build": "hardhat compile",
     "test": "hardhat test",
-    "deploy:arb-sepolia": "hardhat run scripts/deploy.ts --network arb-sepolia"
+    "deploy:arb-sepolia": "hardhat run scripts/deploy.ts --network arb-sepolia",
+    "deploy:mock:local": "hardhat run scripts/deploy-mock-local.ts --network localhost"
   },
   "devDependencies": {
     "@fhenixprotocol/cofhe-contracts": "^0.0.13",

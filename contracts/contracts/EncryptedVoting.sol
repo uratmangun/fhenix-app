@@ -4,158 +4,118 @@ pragma solidity ^0.8.25;
 import {FHE, euint64, euint8, InEuint8} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 contract EncryptedVoting {
-    struct Proposal {
-        string title;
-        uint256 deadline;
+    struct Product {
+        string name;
+        string url;
+        string tagline;
         bool exists;
-        bool finalized;
-        uint8 optionsCount;
-        euint64[] tallies;
+        address productOwner;
+        euint64 encryptedVotes;
     }
 
-    uint256 public proposalCount;
-    address public owner;
+    uint256 public productCount;
 
-    mapping(uint256 proposalId => Proposal) private proposals;
-    mapping(uint256 proposalId => mapping(address voter => bool)) public hasVoted;
+    mapping(uint256 productId => Product) private products;
+    mapping(uint256 productId => mapping(address voter => bool)) public hasVotedForProduct;
 
     euint64 private immutable EUINT64_ZERO;
     euint64 private immutable EUINT64_ONE;
-    euint64 private immutable EUINT64_EIGHT;
 
-    event ProposalCreated(uint256 indexed proposalId, string title, uint8 optionsCount, uint256 deadline);
-    event VoteCast(uint256 indexed proposalId, address indexed voter);
-    event VoteFinalizationRequested(uint256 indexed proposalId);
+    event ProductSubmitted(uint256 indexed productId, string name, string url, string tagline, address indexed productOwner);
+    event ProductVoteUpdated(uint256 indexed productId, address indexed voter, bool hasVoted);
 
-    error NotOwner();
-    error InvalidProposal();
-    error InvalidOptionsCount();
-    error DeadlineInPast();
-    error VotingClosed();
-    error VotingStillOpen();
-    error AlreadyVoted();
-    error ProposalFinalized();
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
+    error InvalidProduct();
+    error ProductOwnerCannotVote();
 
     constructor() {
-        owner = msg.sender;
         EUINT64_ZERO = FHE.asEuint64(0);
         EUINT64_ONE = FHE.asEuint64(1);
-        EUINT64_EIGHT = FHE.asEuint64(8);
         FHE.allowThis(EUINT64_ZERO);
         FHE.allowThis(EUINT64_ONE);
-        FHE.allowThis(EUINT64_EIGHT);
     }
 
-    function createProposal(
-        string calldata title,
-        uint8 optionsCount,
-        uint256 deadline
-    ) external onlyOwner returns (uint256 proposalId) {
-        if (optionsCount < 2 || optionsCount > 8) revert InvalidOptionsCount();
-        if (deadline <= block.timestamp) revert DeadlineInPast();
+    // Creates a new encrypted-voting product entry and assigns the caller as the product owner.
+    function submitProduct(
+        string calldata name,
+        string calldata url,
+        string calldata tagline
+    ) external returns (uint256 productId) {
+        productId = productCount;
+        Product storage product = products[productId];
 
-        proposalId = proposalCount;
-        Proposal storage proposal = proposals[proposalId];
+        product.name = name;
+        product.url = url;
+        product.tagline = tagline;
+        product.exists = true;
+        product.productOwner = msg.sender;
+        product.encryptedVotes = FHE.asEuint64(0);
+        FHE.allowThis(product.encryptedVotes);
 
-        proposal.title = title;
-        proposal.deadline = deadline;
-        proposal.exists = true;
-        proposal.optionsCount = optionsCount;
+        productCount = productId + 1;
 
-        for (uint8 i = 0; i < optionsCount; i++) {
-            proposal.tallies.push(FHE.asEuint64(0));
-            FHE.allowThis(proposal.tallies[i]);
+        emit ProductSubmitted(productId, name, url, tagline, msg.sender);
+    }
+
+    // Updates the caller's encrypted vote state for a product while preventing self-voting.
+    function setEncryptedVoteState(uint256 productId, InEuint8 calldata encryptedVoteState) external {
+        Product storage product = products[productId];
+
+        if (!product.exists) revert InvalidProduct();
+        if (msg.sender == product.productOwner) revert ProductOwnerCannotVote();
+
+        bool currentlyVoted = hasVotedForProduct[productId][msg.sender];
+
+        euint8 voteState = FHE.asEuint8(encryptedVoteState);
+
+        if (currentlyVoted) {
+            product.encryptedVotes = FHE.sub(product.encryptedVotes, EUINT64_ONE);
+        } else {
+            product.encryptedVotes = FHE.add(product.encryptedVotes, EUINT64_ONE);
         }
+        FHE.allowThis(product.encryptedVotes);
 
-        proposalCount = proposalId + 1;
+        bool nowVoted = !currentlyVoted;
+        hasVotedForProduct[productId][msg.sender] = nowVoted;
 
-        emit ProposalCreated(proposalId, title, optionsCount, deadline);
+        FHE.allowSender(voteState);
+
+        emit ProductVoteUpdated(productId, msg.sender, nowVoted);
     }
 
-    function vote(uint256 proposalId, InEuint8 calldata encryptedOption) external {
-        Proposal storage proposal = proposals[proposalId];
-
-        if (!proposal.exists) revert InvalidProposal();
-        if (proposal.finalized) revert ProposalFinalized();
-        if (block.timestamp >= proposal.deadline) revert VotingClosed();
-        if (hasVoted[proposalId][msg.sender]) revert AlreadyVoted();
-
-        euint8 option = FHE.asEuint8(encryptedOption);
-        euint64 option64 = FHE.asEuint64(option);
-        FHE.allowThis(option);
-        FHE.allowThis(option64);
-
-        for (uint8 i = 0; i < proposal.optionsCount; i++) {
-            euint64 key64 = FHE.sub(EUINT64_EIGHT, FHE.asEuint64(8 - i));
-            FHE.allowThis(key64);
-            euint64 delta = FHE.select(option64.eq(key64), EUINT64_ONE, EUINT64_ZERO);
-            FHE.allowThis(delta);
-            proposal.tallies[i] = FHE.add(proposal.tallies[i], delta);
-            FHE.allowThis(proposal.tallies[i]);
-        }
-
-        hasVoted[proposalId][msg.sender] = true;
-
-        FHE.allowSender(option);
-
-        emit VoteCast(proposalId, msg.sender);
+    // Returns the encrypted vote handle for plugin-based local tests and advanced clients.
+    function getEncryptedVoteCount(uint256 productId) external view returns (euint64) {
+        Product storage product = products[productId];
+        if (!product.exists) revert InvalidProduct();
+        return product.encryptedVotes;
     }
 
-    function finalizeProposal(uint256 proposalId) external onlyOwner {
-        Proposal storage proposal = proposals[proposalId];
-
-        if (!proposal.exists) revert InvalidProposal();
-        if (proposal.finalized) revert ProposalFinalized();
-        if (block.timestamp < proposal.deadline) revert VotingStillOpen();
-
-        for (uint8 i = 0; i < proposal.optionsCount; i++) {
-            FHE.decrypt(proposal.tallies[i]);
-        }
-
-        proposal.finalized = true;
-
-        emit VoteFinalizationRequested(proposalId);
+    // Returns the decrypted aggregate vote count for a product.
+    function getPublicVoteCount(uint256 productId) external view returns (uint256) {
+        Product storage product = products[productId];
+        if (!product.exists) revert InvalidProduct();
+        return FHE.getDecryptResult(product.encryptedVotes);
     }
 
-    function decryptResultForOption(uint256 proposalId, uint8 optionIndex) external view returns (uint256 value, bool ready) {
-        Proposal storage proposal = proposals[proposalId];
-
-        if (!proposal.exists) revert InvalidProposal();
-        if (optionIndex >= proposal.optionsCount) revert InvalidProposal();
-
-        return FHE.getDecryptResultSafe(proposal.tallies[optionIndex]);
-    }
-
-    function getProposalSummary(
-        uint256 proposalId
+    // Returns the public product metadata and owner wallet.
+    function getProductSummary(
+        uint256 productId
     )
         external
         view
         returns (
-            string memory title,
-            uint256 deadline,
+            string memory name,
+            string memory url,
+            string memory tagline,
             bool exists,
-            bool finalized,
-            uint8 optionsCount
+            address productOwner
         )
     {
-        Proposal storage proposal = proposals[proposalId];
+        Product storage product = products[productId];
 
-        title = proposal.title;
-        deadline = proposal.deadline;
-        exists = proposal.exists;
-        finalized = proposal.finalized;
-        optionsCount = proposal.optionsCount;
-    }
-
-    function getEncryptedTallies(uint256 proposalId) external view returns (euint64[] memory) {
-        Proposal storage proposal = proposals[proposalId];
-        if (!proposal.exists) revert InvalidProposal();
-        return proposal.tallies;
+        name = product.name;
+        url = product.url;
+        tagline = product.tagline;
+        exists = product.exists;
+        productOwner = product.productOwner;
     }
 }

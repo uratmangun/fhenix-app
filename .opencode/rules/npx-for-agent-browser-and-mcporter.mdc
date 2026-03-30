@@ -1,0 +1,35 @@
+---
+description: "When using agent-browser or mcporter, invoke them via npx"
+---
+
+# npx Invocation for agent-browser and mcporter
+
+## Overview
+
+**MANDATORY**: When using `agent-browser` or `mcporter`, invoke them with `npx`.
+
+## Required Command Forms
+
+- Use `npx agent-browser ...`
+- Use `npx mcporter ...`
+
+## Do Not Use
+
+- `agent-browser ...`
+- `mcporter ...`
+
+## Rationale
+
+These tools may not be installed globally in every environment. Using `npx` ensures the correct project/local executable resolution path is used consistently.
+
+## Examples
+
+```bash
+npx agent-browser open https://example.com
+npx agent-browser snapshot -i
+npx mcporter list context-7 --schema --output json
+```
+
+## Scope
+
+Apply this rule whenever browser automation tasks use the `agent-browser` skill or MCP tasks use the `mcporter` skill.

@@ -1,128 +1,292 @@
-# Next.js Template
+# Fhenix App Contract Guide
 
-A minimal Next.js 16 template that deploys to Cloudflare Workers with `@opennextjs/cloudflare` and Wrangler.
+This repository contains a private Product Hunt–style voting flow built around two Solidity contracts in `contracts/contracts/`:
 
-Live demo: https://nextjs-template.gule.workers.dev
+- `EncryptedVoting.sol` — the real encrypted Fhenix/CoFHE contract for Arbitrum Sepolia
+- `EncryptedVotingMock.sol` — the local development mock contract for localhost testing
 
-## What’s included
+## Contract files
 
-- Next.js App Router app
-- Cloudflare Workers deployment via OpenNext
-- Local Workers preview with Wrangler
-- Browser-configured OpenAI-compatible chat settings
-- Server-side base URL hardening for public template safety
-- Static asset caching via `public/_headers`
+- `contracts/contracts/EncryptedVoting.sol`
+- `contracts/contracts/EncryptedVotingMock.sol`
+- `contracts/test/EncryptedVoting.test.ts`
+- `contracts/scripts/deploy.ts`
+- `contracts/scripts/deploy-mock-local.ts`
+- `contracts/hardhat.config.ts`
 
-## Template behavior
+## Current deployed contract
 
-This template keeps provider configuration in the browser:
+Arbitrum Sepolia:
 
-- `baseURL` is stored in `localStorage`
-- `apiKey` is stored in `localStorage`
-- available models are loaded from `POST /api/models`
-- chat streaming is proxied through `POST /api/chat`
+- `EncryptedVoting`: `0xa28f103de761fbf88CE69Ac813A5F906F83c75f3`
 
-Because this repository is meant to be public and reusable, the server validates the configured provider URL before proxying requests.
+Saved in:
 
-Allowed provider URLs must:
+- `contracts/deployments/arb-sepolia.json`
 
-- use `https`
-- point to a public host
-- not target `localhost` or private network IPs
-- not include embedded credentials
-- not include query strings or hash fragments
+## How it works
 
-Example valid base URL:
+### `EncryptedVoting.sol`
 
-```text
-https://api.openai.com/v1
-```
+`contracts/contracts/EncryptedVoting.sol` is the real encrypted voting contract.
 
-## Prerequisites
+It supports:
 
-- Node.js 20+
-- `pnpm`
-- Cloudflare account
-- Wrangler authenticated with your Cloudflare account
+- `submitProduct(name, url, tagline)`
+- `setEncryptedVoteState(productId, encryptedVoteState)`
+- `getEncryptedVoteCount(productId)`
+- `getPublicVoteCount(productId)`
+- `getProductSummary(productId)`
+- `productCount()`
+- `hasVotedForProduct(productId, voter)`
 
-## Install
+Behavior:
+
+- each product has public metadata: name, URL, tagline, owner
+- votes are stored as encrypted aggregate state
+- product owners cannot vote for their own product
+- a wallet has one active vote state per product
+- the encrypted vote tally is kept in `encryptedVotes`
+- `getPublicVoteCount` returns the decrypted aggregate count
+
+Key contract flow:
+
+1. submit a product
+2. another wallet encrypts a vote client-side
+3. `setEncryptedVoteState(...)` toggles that wallet’s vote state
+4. aggregate encrypted count updates internally
+5. public clients can read the decrypted total with `getPublicVoteCount(...)`
+
+### `EncryptedVotingMock.sol`
+
+`contracts/contracts/EncryptedVotingMock.sol` is only for local development.
+
+It supports:
+
+- `submitProduct()`
+- `setVoteState(productId, voted)`
+- `getPublicVoteCount(productId)`
+- `getProductSummary(productId)`
+- `productCount()`
+- `hasVotedForProduct(productId, voter)`
+
+Behavior:
+
+- no encryption
+- same owner-cannot-vote rule
+- same vote toggle model
+- intended for localhost app testing only
+
+## Test strategy
+
+This repo uses two different workflows:
+
+### 1. Real encrypted contract test workflow
+
+Use this for `EncryptedVoting.sol`.
+
+Test file:
+
+- `contracts/test/EncryptedVoting.test.ts`
+
+This uses:
+
+- `cofhe-hardhat-plugin`
+- `cofhejs/node`
+- plugin mock helpers via `hre.cofhe.*`
+
+The test covers:
+
+- submitting a product
+- reading product summary metadata
+- preventing owner self-votes
+- allowing another wallet to vote
+- asserting encrypted tally plaintext with plugin mocks
+- reverting on invalid product reads
+
+### 2. Local mock app workflow
+
+Use this for frontend/local app flows.
+
+Deploy:
+
+- `EncryptedVotingMock.sol` to localhost
+
+Use it to test:
+
+- product submission UI
+- leaderboard UI
+- product detail page
+- vote/unvote UX
+
+## How to compile contracts
+
+From the contract project:
 
 ```bash
+cd contracts
 pnpm install
+pnpm build
 ```
 
-## Local development
+What this does:
 
-Run standard Next.js development:
+- compiles Solidity with Hardhat
+- generates updated artifacts
+- updates TypeChain output when needed
+
+Build script source:
+
+- `contracts/package.json`
+
+## How to run contract tests
+
+From the contract project:
 
 ```bash
-pnpm dev
+cd contracts
+pnpm install
+pnpm test
 ```
 
-Run a Cloudflare Workers preview using the OpenNext adapter:
+This runs:
+
+- `hardhat test`
+
+Primary encrypted contract test file:
+
+- `contracts/test/EncryptedVoting.test.ts`
+
+## How to deploy the mock contract locally
+
+Start a local Hardhat node first in one terminal:
 
 ```bash
-pnpm preview
+cd contracts
+pnpm hardhat node
 ```
 
-The Workers preview reads `.dev.vars`.
-
-Create it from the example if needed:
+Then deploy the mock in another terminal:
 
 ```bash
-cp .dev.vars.example .dev.vars
+cd contracts
+pnpm deploy:mock:local
 ```
 
-Current example contents:
+This runs:
 
-```text
-NEXTJS_ENV=development
-```
+- `contracts/scripts/deploy-mock-local.ts`
 
-## Deploy to Cloudflare Workers
+It writes deployment outputs to:
 
-This project is already configured for Workers in `wrangler.jsonc` and `open-next.config.ts`.
+- `contracts/deployments/localhost.json`
+- `lib/cloudflare/local-contract-registry.json`
 
-Deploy with:
+## How to deploy the real encrypted contract to Arbitrum Sepolia
+
+Required environment variables:
+
+- `ARBITRUM_SEPOLIA_RPC_URL`
+- `PRIVATE_KEY`
+- optional: `ARBISCAN_API_KEY`
+
+Network config is defined in:
+
+- `contracts/hardhat.config.ts`
+
+Deploy command:
 
 ```bash
-pnpm run deploy
+cd contracts
+pnpm deploy:arb-sepolia
 ```
 
-Useful related commands:
+This runs:
+
+- `contracts/scripts/deploy.ts`
+
+What happens:
+
+1. Hardhat loads the Arbitrum Sepolia RPC URL and deployer private key
+2. `EncryptedVoting.sol` is deployed
+3. deployed address is printed
+4. address is saved to `contracts/deployments/arb-sepolia.json`
+
+Current network settings:
+
+- network name: `arb-sepolia`
+- chain id: `421614`
+- fallback RPC in config: `https://sepolia-rollup.arbitrum.io/rpc`
+
+## Important workflow rules
+
+### Use `EncryptedVoting.sol` for:
+
+- encrypted contract testing
+- Arbitrum Sepolia deployment
+- real app/testnet contract interactions
+
+### Use `EncryptedVotingMock.sol` for:
+
+- localhost development
+- local frontend testing
+- fast non-encrypted debug flows
+
+### Do not use `EncryptedVoting.sol` for localhost app deployment
+
+In this repo, local app usage should stay on the mock contract, while the real encrypted contract is validated through plugin-based tests and deployed to Arbitrum Sepolia.
+
+## Relevant files
+
+### Contracts
+
+- `contracts/contracts/EncryptedVoting.sol`
+- `contracts/contracts/EncryptedVotingMock.sol`
+
+### Tests
+
+- `contracts/test/EncryptedVoting.test.ts`
+
+### Deploy scripts
+
+- `contracts/scripts/deploy.ts`
+- `contracts/scripts/deploy-mock-local.ts`
+
+### Config
+
+- `contracts/hardhat.config.ts`
+- `contracts/package.json`
+
+### Deployment record
+
+- `contracts/deployments/arb-sepolia.json`
+
+## Quick commands
+
+Compile:
 
 ```bash
-pnpm run upload
-pnpm run cf-typegen
+cd contracts
+pnpm build
 ```
 
-## Worker configuration
+Test:
 
-The deployed Worker uses:
+```bash
+cd contracts
+pnpm test
+```
 
-- service name: `nextjs-template`
-- default domain: `https://nextjs-template.gule.workers.dev`
-- compatibility flags:
-  - `nodejs_compat`
-  - `global_fetch_strictly_public`
+Deploy mock locally:
 
-Static assets are served from `.open-next/assets`, and `_next/static` assets are cached aggressively through `public/_headers`.
+```bash
+cd contracts
+pnpm deploy:mock:local
+```
 
-## Project files
+Deploy real contract to Arbitrum Sepolia:
 
-- `app/page.tsx` — chat UI and browser-side provider settings
-- `app/api/models/route.ts` — loads models from an OpenAI-compatible `/models` endpoint
-- `app/api/chat/route.ts` — streams chat completions from an OpenAI-compatible `/chat/completions` endpoint
-- `lib/provider-url.ts` — validates public HTTPS provider URLs
-- `wrangler.jsonc` — Cloudflare Worker configuration
-- `open-next.config.ts` — OpenNext Cloudflare adapter config
-
-## Notes for template users
-
-If you create a new repository from this template, you will usually want to update:
-
-- the Worker name in `wrangler.jsonc`
-- the GitHub repository homepage URL
-- the app metadata and branding
-
-After renaming the Worker, redeploy with Wrangler to get your own `*.workers.dev` URL.
+```bash
+cd contracts
+pnpm deploy:arb-sepolia
+```

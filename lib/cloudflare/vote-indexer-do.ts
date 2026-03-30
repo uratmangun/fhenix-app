@@ -1,7 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 
-type VoteIndexInsert = {
-  proposalId: number;
+type ProductInsert = {
+  productId: number;
+  name: string;
+  url: string;
+  tagline: string;
+  deadline: number;
+  txHash?: string;
+  blockNumber?: number;
+  timestamp: number;
+};
+
+type ProductVoteInsert = {
+  productId: number;
   voter: string;
   txHash: string;
   blockNumber: number;
@@ -9,18 +20,8 @@ type VoteIndexInsert = {
   timestamp: number;
 };
 
-type ProposalInsert = {
-  proposalId: number;
-  title: string;
-  optionsCount: number;
-  deadline: number;
-  txHash: string;
-  blockNumber: number;
-  timestamp: number;
-};
-
-type FinalizationInsert = {
-  proposalId: number;
+type ProductFinalizationInsert = {
+  productId: number;
   txHash: string;
   blockNumber: number;
   timestamp: number;
@@ -54,21 +55,22 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
 
   private initializeSchema() {
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS proposals (
-        proposal_id INTEGER PRIMARY KEY,
-        title TEXT NOT NULL,
-        options_count INTEGER NOT NULL,
+      CREATE TABLE IF NOT EXISTS products (
+        product_id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        tagline TEXT NOT NULL,
         deadline INTEGER NOT NULL,
-        created_tx_hash TEXT NOT NULL,
-        created_block_number INTEGER NOT NULL,
+        created_tx_hash TEXT,
+        created_block_number INTEGER,
         created_at INTEGER NOT NULL
       )
     `);
 
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS votes (
+      CREATE TABLE IF NOT EXISTS product_votes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proposal_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
         voter TEXT NOT NULL,
         tx_hash TEXT NOT NULL,
         block_number INTEGER NOT NULL,
@@ -79,8 +81,8 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
     `);
 
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS finalizations (
-        proposal_id INTEGER PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS product_finalizations (
+        product_id INTEGER PRIMARY KEY,
         tx_hash TEXT NOT NULL,
         block_number INTEGER NOT NULL,
         finalized_at INTEGER NOT NULL
@@ -99,15 +101,9 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
       )
     `);
 
-    this.sql.exec(
-      "CREATE INDEX IF NOT EXISTS idx_votes_proposal_id ON votes(proposal_id)",
-    );
-    this.sql.exec(
-      "CREATE INDEX IF NOT EXISTS idx_votes_voter ON votes(voter)",
-    );
-    this.sql.exec(
-      "CREATE INDEX IF NOT EXISTS idx_votes_block_number ON votes(block_number)",
-    );
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_product_votes_product_id ON product_votes(product_id)");
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_product_votes_voter ON product_votes(voter)");
+    this.sql.exec("CREATE INDEX IF NOT EXISTS idx_product_votes_block_number ON product_votes(block_number)");
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -115,48 +111,89 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
 
     if (request.method === "POST" && url.pathname === "/sync") {
       const payload = (await request.json()) as {
-        proposals?: ProposalInsert[];
-        votes?: VoteIndexInsert[];
-        finalizations?: FinalizationInsert[];
+        products?: ProductInsert[];
+        votes?: ProductVoteInsert[];
+        finalizations?: ProductFinalizationInsert[];
         syncState?: SyncState;
       };
       this.ingest(payload);
       return Response.json({ ok: true });
     }
 
+    if (request.method === "POST" && url.pathname === "/products") {
+      const payload = (await request.json()) as {
+        productId: number;
+        name: string;
+        url: string;
+        tagline: string;
+        deadline: number;
+        timestamp: number;
+      };
+
+      this.sql.exec(
+        "INSERT OR REPLACE INTO products (product_id, name, url, tagline, deadline, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        payload.productId,
+        payload.name,
+        payload.url,
+        payload.tagline,
+        payload.deadline,
+        payload.timestamp,
+      );
+
+      return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/products") {
+      const products = this.sql
+        .exec<{
+          product_id: number;
+          name: string;
+          url: string;
+          tagline: string;
+          deadline: number;
+          created_at: number;
+        }>(
+          "SELECT product_id, name, url, tagline, deadline, created_at FROM products ORDER BY product_id DESC",
+        )
+        .toArray();
+
+      return Response.json({ products });
+    }
+
     if (request.method === "GET" && url.pathname === "/index") {
-      const proposalId = url.searchParams.get("proposalId");
+      const productId = url.searchParams.get("productId");
       const voter = url.searchParams.get("voter");
       const limit = Math.min(Number(url.searchParams.get("limit") || "100"), 500);
       const offset = Math.max(Number(url.searchParams.get("offset") || "0"), 0);
 
-      const proposals = this.sql
+      const products = this.sql
         .exec<{
-          proposal_id: number;
-          title: string;
-          options_count: number;
+          product_id: number;
+          name: string;
+          url: string;
+          tagline: string;
           deadline: number;
-          created_tx_hash: string;
-          created_block_number: number;
+          created_tx_hash: string | null;
+          created_block_number: number | null;
           created_at: number;
         }>(
-          "SELECT proposal_id, title, options_count, deadline, created_tx_hash, created_block_number, created_at FROM proposals ORDER BY proposal_id DESC",
+          "SELECT product_id, name, url, tagline, deadline, created_tx_hash, created_block_number, created_at FROM products ORDER BY product_id DESC",
         )
         .toArray();
 
       let votes;
-      if (proposalId) {
+      if (productId) {
         votes = this.sql
           .exec<{
-            proposal_id: number;
+            product_id: number;
             voter: string;
             tx_hash: string;
             block_number: number;
             log_index: number;
             created_at: number;
           }>(
-            "SELECT proposal_id, voter, tx_hash, block_number, log_index, created_at FROM votes WHERE proposal_id = ? ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
-            Number(proposalId),
+            "SELECT product_id, voter, tx_hash, block_number, log_index, created_at FROM product_votes WHERE product_id = ? ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
+            Number(productId),
             limit,
             offset,
           )
@@ -164,14 +201,14 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
       } else if (voter) {
         votes = this.sql
           .exec<{
-            proposal_id: number;
+            product_id: number;
             voter: string;
             tx_hash: string;
             block_number: number;
             log_index: number;
             created_at: number;
           }>(
-            "SELECT proposal_id, voter, tx_hash, block_number, log_index, created_at FROM votes WHERE lower(voter) = lower(?) ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
+            "SELECT product_id, voter, tx_hash, block_number, log_index, created_at FROM product_votes WHERE lower(voter) = lower(?) ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
             voter,
             limit,
             offset,
@@ -180,14 +217,14 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
       } else {
         votes = this.sql
           .exec<{
-            proposal_id: number;
+            product_id: number;
             voter: string;
             tx_hash: string;
             block_number: number;
             log_index: number;
             created_at: number;
           }>(
-            "SELECT proposal_id, voter, tx_hash, block_number, log_index, created_at FROM votes ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
+            "SELECT product_id, voter, tx_hash, block_number, log_index, created_at FROM product_votes ORDER BY block_number DESC, log_index DESC LIMIT ? OFFSET ?",
             limit,
             offset,
           )
@@ -195,26 +232,25 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
       }
 
       const finalizations = this.sql
-        .exec<{ proposal_id: number; tx_hash: string; block_number: number; finalized_at: number }>(
-          "SELECT proposal_id, tx_hash, block_number, finalized_at FROM finalizations ORDER BY block_number DESC",
+        .exec<{ product_id: number; tx_hash: string; block_number: number; finalized_at: number }>(
+          "SELECT product_id, tx_hash, block_number, finalized_at FROM product_finalizations ORDER BY block_number DESC",
         )
         .toArray();
 
-      const sync = this.sql
-        .exec<{
-          chain_id: number | null;
-          contract_address: string | null;
-          from_block: number | null;
-          to_block: number | null;
-          synced_at: number | null;
-          tx_hash: string | null;
-        }>(
-          "SELECT chain_id, contract_address, from_block, to_block, synced_at, tx_hash FROM sync_state WHERE id = 1",
-        )
-        .toArray()[0] ?? null;
+      const sync =
+        this.sql
+          .exec<{
+            chain_id: number | null;
+            contract_address: string | null;
+            from_block: number | null;
+            to_block: number | null;
+            synced_at: number | null;
+            tx_hash: string | null;
+          }>("SELECT chain_id, contract_address, from_block, to_block, synced_at, tx_hash FROM sync_state WHERE id = 1")
+          .toArray()[0] ?? null;
 
       return Response.json({
-        proposals,
+        products,
         votes,
         finalizations,
         sync,
@@ -225,28 +261,29 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
   }
 
   private ingest(payload: {
-    proposals?: ProposalInsert[];
-    votes?: VoteIndexInsert[];
-    finalizations?: FinalizationInsert[];
+    products?: ProductInsert[];
+    votes?: ProductVoteInsert[];
+    finalizations?: ProductFinalizationInsert[];
     syncState?: SyncState;
   }) {
-    for (const proposal of payload.proposals ?? []) {
+    for (const product of payload.products ?? []) {
       this.sql.exec(
-        "INSERT OR REPLACE INTO proposals (proposal_id, title, options_count, deadline, created_tx_hash, created_block_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        proposal.proposalId,
-        proposal.title,
-        proposal.optionsCount,
-        proposal.deadline,
-        proposal.txHash,
-        proposal.blockNumber,
-        proposal.timestamp,
+        "INSERT OR REPLACE INTO products (product_id, name, url, tagline, deadline, created_tx_hash, created_block_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        product.productId,
+        product.name,
+        product.url,
+        product.tagline,
+        product.deadline,
+        product.txHash ?? null,
+        product.blockNumber ?? null,
+        product.timestamp,
       );
     }
 
     for (const vote of payload.votes ?? []) {
       this.sql.exec(
-        "INSERT OR IGNORE INTO votes (proposal_id, voter, tx_hash, block_number, log_index, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        vote.proposalId,
+        "INSERT OR IGNORE INTO product_votes (product_id, voter, tx_hash, block_number, log_index, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        vote.productId,
         vote.voter,
         vote.txHash,
         vote.blockNumber,
@@ -257,8 +294,8 @@ export class VoteIndexerDO extends DurableObject<CloudflareEnv> {
 
     for (const finalization of payload.finalizations ?? []) {
       this.sql.exec(
-        "INSERT OR REPLACE INTO finalizations (proposal_id, tx_hash, block_number, finalized_at) VALUES (?, ?, ?, ?)",
-        finalization.proposalId,
+        "INSERT OR REPLACE INTO product_finalizations (product_id, tx_hash, block_number, finalized_at) VALUES (?, ?, ?, ?)",
+        finalization.productId,
         finalization.txHash,
         finalization.blockNumber,
         finalization.timestamp,
