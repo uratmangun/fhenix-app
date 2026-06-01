@@ -1,0 +1,6 @@
+# Add before the final http_status:404 catch-all in
+# /home/ubuntu/termux-migration/apps/.cloudflared/config.remote.yml
+ingress:
+  - hostname: fhenix-app.uratmangun.ovh
+    service: http://termux-stack:8787
+  - service: http_status:404

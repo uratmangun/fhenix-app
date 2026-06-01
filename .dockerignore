@@ -1,0 +1,15 @@
+node_modules
+.next
+.open-next
+.git
+.cursor
+.agents
+.wrangler
+coverage
+data
+*.log
+.DS_Store
+.env*
+!.env.example
+contracts
+.deploy

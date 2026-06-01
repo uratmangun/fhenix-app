@@ -1,0 +1,24 @@
+[Unit]
+Description=Fhenix Private Vote (Next.js)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/fhenix-app:latest
+ContainerName=fhenix-app
+Pod=termux-stack.pod
+EnvironmentFile=%h/.config/fhenix-app/fhenix-app.env
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=HOSTNAME=0.0.0.0
+Environment=NEXT_TELEMETRY_DISABLED=1
+Volume=%h/.local/share/fhenix-app:/app/data:Z
+AutoUpdate=local
+
+[Service]
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
